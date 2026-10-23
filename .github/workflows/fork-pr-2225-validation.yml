@@ -17,7 +17,7 @@ env:
 
 jobs:
   core:
-    name: Fork Node 24 / ${{ matrix.gate }} (exact PR source)
+    name: Fork Node 24 / ${{ matrix.gate }} ${{ matrix.shard }} (exact PR source)
     if: github.repository == 'Ghoscro/octane'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -25,7 +25,19 @@ jobs:
       fail-fast: false
       max-parallel: 2
       matrix:
-        gate: [format, typecheck, test, tooling-browser, build]
+        include:
+          - gate: format
+          - gate: typecheck
+          - gate: tooling-browser
+          - gate: build
+          - gate: test
+            shard: 1/4
+          - gate: test
+            shard: 2/4
+          - gate: test
+            shard: 3/4
+          - gate: test
+            shard: 4/4
     defaults:
       run:
         shell: bash
@@ -90,7 +102,7 @@ jobs:
 
       - name: Run complete repository test command
         if: matrix.gate == 'test'
-        run: pnpm test --maxWorkers=2
+        run: pnpm test --maxWorkers=2 --shard=${{ matrix.shard }}
 
       - name: Validate CI tooling and real headless browser diagnostics
         if: matrix.gate == 'tooling-browser'
