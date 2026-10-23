@@ -1,0 +1,110 @@
+name: Fork validation for Octane 2225 (not upstream CI)
+
+on:
+  push:
+    branches: [validation/octane-2225-node24]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: octane-2225-fork-validation
+  cancel-in-progress: true
+
+env:
+  OCTANE_SOURCE_SHA: 5a17fcdc966ef144b820877a306ff3e76ddce2ea
+  OCTANE_SOURCE_TREE: 23061e288bf9239a1790bbff0b84e5637ba46f3a
+
+jobs:
+  core:
+    name: Fork Node 24 / ${{ matrix.gate }} (exact PR source)
+    if: github.repository == 'Ghoscro/octane'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        gate: [format, typecheck, test, tooling-browser, build]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout immutable PR source, not the harness branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: Ghoscro/octane
+          ref: 5a17fcdc966ef144b820877a306ff3e76ddce2ea
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert tested source identity
+        run: |
+          test "$(git rev-parse HEAD)" = "$OCTANE_SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$OCTANE_SOURCE_TREE"
+          git diff --exit-code
+          {
+            echo 'Independent fork validation; this is not an upstream required check.'
+            echo "Source SHA: $OCTANE_SOURCE_SHA"
+            echo "Source tree: $OCTANE_SOURCE_TREE"
+            echo "Harness/event SHA: $GITHUB_SHA"
+            echo 'Runner: GitHub-hosted ubuntu-24.04; upstream uses Blacksmith.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install repository-pinned pnpm
+        uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b
+        with:
+          version: 12.9.1
+          run_install: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Verify toolchain and install frozen dependency graph
+        run: |
+          node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1); console.log(process.version)"
+          test "$(pnpm --version)" = '12.9.1'
+          node -e "if (JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager !== 'pnpm@12.9.1') process.exit(1)"
+          pnpm install --prod=false --frozen-lockfile
+          git diff --exit-code
+
+      - name: Install headless browsers used by the complete test suite
+        if: matrix.gate == 'test' || matrix.gate == 'tooling-browser'
+        run: |
+          bash scripts/ci-apt-https.sh
+          pnpm exec playwright install --with-deps chromium
+          pnpm --filter @octanejs/vite-plugin exec node node_modules/playwright-webkit/cli.js install --with-deps webkit
+
+      - name: Check complete repository formatting
+        if: matrix.gate == 'format'
+        run: pnpm format:check
+
+      - name: Check complete repository types and example orchestration
+        if: matrix.gate == 'typecheck'
+        run: |
+          pnpm typecheck
+          pnpm examples:static:check
+
+      - name: Run complete repository test command
+        if: matrix.gate == 'test'
+        run: pnpm test --maxWorkers=2
+
+      - name: Validate CI tooling and real headless browser diagnostics
+        if: matrix.gate == 'tooling-browser'
+        run: |
+          pnpm ci:workflow:test
+          node --test scripts/react-parity/tests/browser-diagnostics.smoke.mjs benchmarks/js-framework/timing.test.mjs
+          pnpm changeset:check
+
+      - name: Build Octane and verify emitted distribution
+        if: matrix.gate == 'build'
+        run: pnpm build
+
+      - name: Confirm tested source remains unchanged
+        run: |
+          test "$(git rev-parse HEAD)" = "$OCTANE_SOURCE_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$OCTANE_SOURCE_TREE"
+          git diff --exit-code
