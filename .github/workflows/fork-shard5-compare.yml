@@ -1,0 +1,105 @@
+name: Fork shard 5 of 8 base/patch diagnostic (not upstream CI)
+'on':
+  push:
+    branches:
+    - validation/octane-2225-shard5-compare
+permissions:
+  contents: read
+concurrency:
+  group: octane-2225-shard5-compare
+  cancel-in-progress: true
+jobs:
+  shard5_compare:
+    name: Fork full-root shard 5/8 / ${{ matrix.revision }}
+    if: github.repository == 'Ghoscro/octane'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+        - revision: pristine-base
+          source_sha: f47ddbf2b29a645b36f2837f60605370cd3199ef
+          source_tree: 8da4ea0c07717bf89e394f746512af5d32f7ea3b
+        - revision: pr-patch
+          source_sha: 5a17fcdc966ef144b820877a306ff3e76ddce2ea
+          source_tree: 23061e288bf9239a1790bbff0b84e5637ba46f3a
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Checkout immutable PR source, not the harness branch
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      with:
+        repository: Ghoscro/octane
+        ref: ${{ matrix.source_sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Assert tested source identity
+      run: |
+        test "$(git rev-parse HEAD)" = "$OCTANE_SOURCE_SHA"
+        test "$(git rev-parse HEAD^{tree})" = "$OCTANE_SOURCE_TREE"
+        git diff --exit-code
+        {
+          echo 'Independent fork validation; this is not an upstream required check.'
+          echo "Source SHA: $OCTANE_SOURCE_SHA"
+          echo "Source tree: $OCTANE_SOURCE_TREE"
+          echo "Harness/event SHA: $GITHUB_SHA"
+          echo 'Runner: GitHub-hosted ubuntu-24.04; upstream uses Blacksmith.'
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Install repository-pinned pnpm
+      uses: pnpm/action-setup@d9184bf108216479bc5a137cc391f4d7b14c870b
+      with:
+        version: 12.9.1
+        run_install: false
+    - name: Setup Node 24
+      uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      with:
+        node-version: 24
+        cache: pnpm
+    - name: Verify toolchain and install frozen dependency graph
+      run: |
+        node -e "if (process.versions.node.split('.')[0] !== '24') process.exit(1); console.log(process.version)"
+        test "$(pnpm --version)" = '12.9.1'
+        node -e "if (JSON.parse(require('node:fs').readFileSync('package.json','utf8')).packageManager !== 'pnpm@12.9.1') process.exit(1)"
+        pnpm install --prod=false --frozen-lockfile
+        git diff --exit-code
+    - name: Install headless browsers used by the complete test suite
+      run: |
+        bash scripts/ci-apt-https.sh
+        pnpm exec playwright install --with-deps chromium
+        pnpm --filter @octanejs/vite-plugin exec node node_modules/playwright-webkit/cli.js install --with-deps webkit
+    - name: Run the complete original shard 5/8 with unchanged test timeouts
+      env:
+        NODE_OPTIONS: --max-old-space-size=8192
+      run: |
+        free -h
+        df -h /tmp /dev/shm
+        node -e "const v8=require('node:v8'),os=require('node:os'); console.log({node:process.version,platform:process.platform,totalMemoryBytes:os.totalmem(),constrainedMemoryBytes:process.constrainedMemory(),heapLimitBytes:v8.getHeapStatistics().heap_size_limit})"
+        for resource in memory.max memory.current memory.peak memory.events; do
+          if [ -r "/sys/fs/cgroup/$resource" ]; then
+            echo "$resource"
+            cat "/sys/fs/cgroup/$resource"
+          fi
+        done
+        pnpm test --maxWorkers=2 --shard=5/8
+    - name: Retain test-runner resource diagnostics
+      if: always()
+      run: |
+        free -h
+        df -h /tmp /dev/shm
+        for resource in memory.max memory.current memory.peak memory.events; do
+          if [ -r "/sys/fs/cgroup/$resource" ]; then
+            echo "$resource"
+            cat "/sys/fs/cgroup/$resource"
+          fi
+        done
+    - name: Confirm tested source remains unchanged
+      run: |
+        test "$(git rev-parse HEAD)" = "$OCTANE_SOURCE_SHA"
+        test "$(git rev-parse HEAD^{tree})" = "$OCTANE_SOURCE_TREE"
+        git diff --exit-code
+    env:
+      OCTANE_SOURCE_SHA: ${{ matrix.source_sha }}
+      OCTANE_SOURCE_TREE: ${{ matrix.source_tree }}
